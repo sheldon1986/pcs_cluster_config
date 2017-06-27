@@ -27,17 +27,9 @@ do
 			;;
 		g)
 			GaleraClusterID=$OPTARG
-			if [[ -z $GaleraClusterID ]]
-			then
-				GaleraClusterID=clustercheck
-			fi
 			;;
 		p)
 			GaleraClusterPassword=$OPTARG
-			if [[ -z $GaleraClusterPassword ]]
-			then
-				GaleraClusterPassword=password
-			fi
 			;;
 		c)
 			ClusterNodeList=$OPTARG
@@ -52,10 +44,6 @@ do
 			;;
 		n)
                         ClusterName=$OPTARG
-                        if [[ -z $ClusterName ]]
-                        then
-                                ClusterName=PCS_Cluster
-                        fi
                         ;;
 		s)
 			HAproxyServerList=$OPTARG
@@ -71,8 +59,24 @@ do
 done
 shift $(( $OPTIND  -1 ))
 Option=$1
+if [[ -z $GaleraClusterID ]]
+then
+	GaleraClusterID=clustercheck
+fi
+echo "Galera Cluster Monitoring ID is" $GaleraClusterID
 
-function print_help () 
+if [[ -z $GaleraClusterPassword ]]
+then
+	GaleraClusterPassword=password
+fi
+echo "Galera Cluster Monitoring password is" $GaleraClusterPassword
+
+if [[ -z $ClusterName ]]
+then
+	ClusterName=PCS_Cluster
+fi
+
+function print_help ()
 {
 	echo $0 " [options] [Command]"
 	echo "Setup and configure MariaDB with GaleraCluster and HAproxy Pacemaker "
@@ -95,25 +99,31 @@ function print_help ()
 	echo " usage example)"
 	echo " pcs_cluster_config -i 10.0.0.1 -m 24 -g clustercheck -p password -c 192.200.10.16,192.200.10.17,192.200.10.18 -n PCS_Cluster -s 172.16.10.11,172.16.10.12,172.16.10.13 config"
 	echo " pcs_cluster_config -i 10.0.0.1 -m 24 -g clustercheck -p password -c 192.200.10.16,192.200.10.17,192.200.10.18 -n PCS_Cluster -s 172.16.10.11,172.16.10.12,172.16.10.13 pcs"
-		
+
 }
 
 function pre_setup  ()
 {
 	# configure host file
 	Server_Count=1
-	for i in $(echo $Node_List | sed -e 's/,/ /g')
+	for i in $(echo $ClusterNodeList | sed -e 's/,/ /g')
 	do
 		echo $i" node"$Server_Count >> /etc/hosts
+		if [ $( ip a | grep $i | wc -l) -eq 1 ]
+		then
+			ThisServerIP=$i
+			ThisServerName=node$Server_Count
+		fi
 		let Server_Count=$Server_Count+1
 	done
 	# iptable check
-	iptable -F
+	iptables -F
 	systemctl stop firewalld
 	systemctl disable firewalld
 	#selinux check
 	setenforce 0
-	
+	echo $ThisServerIP $ThisServerName
+
 }
 
 function pcs_setup ()
@@ -126,9 +136,9 @@ function pcs_setup ()
 	pcs resource create CVIP ocf:heartbeat:IPaddr2 ip=$ClusterVIP cidr_netmask=$ClusterVIPNetmask op monitor interval=30s
 	pcs resource create galera ocf:heartbeat:galera check_user=$GaleraClusterID check_passwd=$GaleraClusterPassword socket="/var/lib/mysql/mysql.sock"  config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid"  wsrep_cluster_address="gcomm://node1,node2,node3"  op monitor  timeout="30" interval="20" op monitor role="Master" timeout="30" interval="10" op monitor role="Slave" timeout="30" interval="30"  meta master-max=3 --master
 	pcs resource create HAproxy systemd:haproxy op monitor interval=2s
-	pcs constraint colocation add HAproxy CVIP INFINITY	
+	pcs constraint colocation add HAproxy CVIP INFINITY
 	pcs constraint order CVIP then HAproxy
-}	
+}
 
 
 function haproxy_setup ()
@@ -147,7 +157,7 @@ function haproxy_setup ()
 	echo "   timeout server 90s" >> /etc/haproxy/haproxy.cfg
 	echo "   timeout client 90s" >> /etc/haproxy/haproxy.cfg
 	Service_server_count=1
-	for i in $(echo HAproxyServerList | sed -e 's/,/ /g')
+	for i in $(echo $HAproxyServerList | sed -e 's/,/ /g')
 	do
 		echo "   server proxy$Service_server_count $i:13306 check inter 1s" >> /etc/haproxy/haproxy.cfg
 		let Service_server_count=$Service_server_count+1
@@ -156,13 +166,26 @@ function haproxy_setup ()
 
 function galera_setup ()
 {
-	mysql -u root -ppassword -e "GRANT PROCESS ON *.* TO '$GaleraClusterID'@'localhost' IDENTIFIED BY '$GaleraClusterPassword';"
-	mysql -u $GaleraClusterIaD -p$GaleraClusterPassword -e "status;"
+	echo $GaleraClusterID $GaleraClusterPassword
+	mysql -u root -e "GRANT PROCESS ON *.* TO '$GaleraClusterID'@'localhost' IDENTIFIED BY '$GaleraClusterPassword';"
+	mysql -u $GaleraClusterID -p$GaleraClusterPassword -e "status;"
+	if [ $(mysql -u root -e "select * from mysql.user" | grep $GaleraClusterID | wc -l) -eq 1 ]
+	then
+		mysql -u root -e "select * from mysql.user" | grep $GaleraClusterID | awk '{print "Account add to "$2}'
+	else
+		echo "something wrong. check mysql account "$GaleraClusterID
+	fi
+	sed -ie '/wsrep_node_address/d' /etc/my.cnf.d/galera.cnf
+	sed -ie '/wsrep_node_name/d' /etc/my.cnf.d/galera.cnf
+	sed -ie '/wsrep_cluster_address/d' /etc/my.cnf.d/galera.cnf
+	echo "wsrep_node_address='"$ThisServerIP"'" >> /etc/my.cnf.d/galera.cnf
+	echo "wsrep_node_name='"$ThisServerName"'" >> /etc/my.cnf.d/galera.cnf
+	echo "wsrep_cluster_address='gcomm://node1,node2,node3'" >> /etc/my.cnf.d/galera.cnf
 }
 
 case $Option in
 	config)
-		echo "pre config and setup galera and haproxy"	
+		echo "pre config and setup galera and haproxy"
 		pre_setup
 		haproxy_setup
 		galera_setup
@@ -186,4 +209,3 @@ case $Option in
 		exit 0;
 	;;
 esac
-
