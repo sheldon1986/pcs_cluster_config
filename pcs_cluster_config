@@ -1,6 +1,6 @@
 #!/bin/bash
 
-while getopts "n:t:O:G:P:u" opt
+while getopts "i:m:g:p:c:n:s:" opt
 do
 	case $opt in
 		i)
