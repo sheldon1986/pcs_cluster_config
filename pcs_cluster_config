@@ -16,7 +16,7 @@ do
 			;;
 		m)
 			ClusterVIPNetmask=$OPTARG
-                        if [[  -z $ClusterVIPNetmask]]
+                        if [[  -z $ClusterVIPNetmask ]]
                         then
 				print_help
 				echo "==========================="
@@ -70,17 +70,32 @@ do
         esac
 done
 shift $(( $OPTIND  -1 ))
+Option=$1
 
 function print_help () 
 {
-	echo $0 "node1 node2 node3"
-	echo "  -i vip"
-	echo "  -m VIP Netmask "
-	echo "  -g Galera Cluster Monitoring ID. Default is clustercheck"
-	echo "  -p Galera Cluster Monitoring IDs password. Default is password"
-	echo "  -c Pacemaker Cluster node list. let me know cluster network eg) 192.200.10.16,192.200.10.17,192.200.10.18"
+	echo $0 " [options] [Command]"
+	echo "Setup and configure MariaDB with GaleraCluster and HAproxy Pacemaker "
+	echo ""
+	echo "[options]"
+	echo "  -i vip =Must Define="
+	echo "  -m VIP Netmask =Must Define="
+	echo "  -g Galera Cluster Monitoring ID. Default is clustercheck "
+	echo "  -p Galera Cluster Monitoring IDs password. Default is password "
+	echo "  -c Pacemaker Cluster node list. let me know cluster network eg) 192.200.10.16,192.200.10.17,192.200.10.18 =Must Define="
 	echo "  -n Pacemaker Cluster Name. Default is PCS_Cluster "
-	echo "  -s Haproxy Service Network list. let me know Service Newtork eg) 172.16.10.11,172.16.10.12,172.16.10.13"
+	echo "  -s Haproxy Service Network list. let me know Service Newtork eg) 172.16.10.11,172.16.10.12,172.16.10.13 =Must Define="
+	echo ""
+	echo "[Command] "
+	echo "config 	only configure haproxy and galera"
+	echo "pcs 	only configure pcs"
+	echo "all 	configure haproxy and galera with pcs"
+	echo ""
+	echo ""
+	echo " usage example)"
+	echo " pcs_cluster_config -i 10.0.0.1 -m 24 -g clustercheck -p password -c 192.200.10.16,192.200.10.17,192.200.10.18 -n PCS_Cluster -s 172.16.10.11,172.16.10.12,172.16.10.13 config"
+	echo " pcs_cluster_config -i 10.0.0.1 -m 24 -g clustercheck -p password -c 192.200.10.16,192.200.10.17,192.200.10.18 -n PCS_Cluster -s 172.16.10.11,172.16.10.12,172.16.10.13 pcs"
+		
 }
 
 function pre_setup  ()
@@ -92,6 +107,13 @@ function pre_setup  ()
 		echo $i" node"$Server_Count >> /etc/hosts
 		let Server_Count=$Server_Count+1
 	done
+	# iptable check
+	iptable -F
+	systemctl stop firewalld
+	systemctl disable firewalld
+	#selinux check
+	setenforce 0
+	
 }
 
 function pcs_setup ()
@@ -134,11 +156,34 @@ function haproxy_setup ()
 
 function galera_setup ()
 {
-	mysql -u root -ppassword -e "GRANT PROCESS ON *.* TO 'clustercheck'@'localhost' IDENTIFIED BY 'password';"
+	mysql -u root -ppassword -e "GRANT PROCESS ON *.* TO '$GaleraClusterID'@'localhost' IDENTIFIED BY '$GaleraClusterPassword';"
+	mysql -u $GaleraClusterIaD -p$GaleraClusterPassword -e "status;"
 }
 
+case $Option in
+	config)
+		echo "pre config and setup galera and haproxy"	
+		pre_setup
+		haproxy_setup
+		galera_setup
+		echo "all done"
+	;;
+	pcs)
+		echo "pcs config and setup"
+		pcs_setup
+		echo "all done"
+	;;
+	all)
+		echo "pre config and setup all"
+		pre_setup
+		haproxy_setup
+		galera_setup
+		pcs_setup
+		echo "all done"
+	;;
+	*)
+		print_help
+		exit 0;
+	;;
+esac
 
-
-pre_setup
-haproxy_setup
-pcs_setup
