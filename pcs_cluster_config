@@ -1,0 +1,144 @@
+#!/bin/bash
+
+while getopts "n:t:O:G:P:u" opt
+do
+	case $opt in
+		i)
+			ClusterVIP=$OPTARG
+			if [[ -z $ClusterVIP ]]
+			then
+				print_help
+				echo "==================="
+				echo "| Must Define VIP | "
+				echo "==================="
+				exit 1;
+			fi
+			;;
+		m)
+			ClusterVIPNetmask=$OPTARG
+                        if [[  -z $ClusterVIPNetmask]]
+                        then
+				print_help
+				echo "==========================="
+				echo "| Must Define VIP Netmask | "
+				echo "==========================="
+				exit 1;
+                        fi
+			;;
+		g)
+			GaleraClusterID=$OPTARG
+			if [[ -z $GaleraClusterID ]]
+			then
+				GaleraClusterID=clustercheck
+			fi
+			;;
+		p)
+			GaleraClusterPassword=$OPTARG
+			if [[ -z $GaleraClusterPassword ]]
+			then
+				GaleraClusterPassword=password
+			fi
+			;;
+		c)
+			ClusterNodeList=$OPTARG
+                        if [[  -z $ClusterNodeList ]]
+                        then
+				print_help
+				echo "===================================="
+				echo "| Must Define Cluster Network list |"
+				echo "===================================="
+				exit 1;
+                        fi
+			;;
+		n)
+                        ClusterName=$OPTARG
+                        if [[ -z $ClusterName ]]
+                        then
+                                ClusterName=PCS_Cluster
+                        fi
+                        ;;
+		s)
+			HAproxyServerList=$OPTARG
+                        if [[  -z $HAproxyServerList ]]
+                        then
+				print_help
+				echo "===================================="
+				echo "| Must Define Service Network list |"
+				echo "===================================="
+			fi
+			;;
+        esac
+done
+shift $(( $OPTIND  -1 ))
+
+function print_help () 
+{
+	echo $0 "node1 node2 node3"
+	echo "  -i vip"
+	echo "  -m VIP Netmask "
+	echo "  -g Galera Cluster Monitoring ID. Default is clustercheck"
+	echo "  -p Galera Cluster Monitoring IDs password. Default is password"
+	echo "  -c Pacemaker Cluster node list. let me know cluster network eg) 192.200.10.16,192.200.10.17,192.200.10.18"
+	echo "  -n Pacemaker Cluster Name. Default is PCS_Cluster "
+	echo "  -s Haproxy Service Network list. let me know Service Newtork eg) 172.16.10.11,172.16.10.12,172.16.10.13"
+}
+
+function pre_setup  ()
+{
+	# configure host file
+	Server_Count=1
+	for i in $(echo $Node_List | sed -e 's/,/ /g')
+	do
+		echo $i" node"$Server_Count >> /etc/hosts
+		let Server_Count=$Server_Count+1
+	done
+}
+
+function pcs_setup ()
+{
+	pcs cluster auth node1 node2 node3
+	pcs cluster setup --name $ClusterName node1 node2 node3
+	pcs cluster start --all
+	pcs property set stonith-enabled=false
+	pcs property set no-quorum-policy=ignore
+	pcs resource create CVIP ocf:heartbeat:IPaddr2 ip=$ClusterVIP cidr_netmask=$ClusterVIPNetmask op monitor interval=30s
+	pcs resource create galera ocf:heartbeat:galera check_user=$GaleraClusterID check_passwd=$GaleraClusterPassword socket="/var/lib/mysql/mysql.sock"  config="/etc/my.cnf" pid="/var/lib/mysql/mysqld.pid"  wsrep_cluster_address="gcomm://node1,node2,node3"  op monitor  timeout="30" interval="20" op monitor role="Master" timeout="30" interval="10" op monitor role="Slave" timeout="30" interval="30"  meta master-max=3 --master
+	pcs resource create HAproxy systemd:haproxy op monitor interval=2s
+	pcs constraint colocation add HAproxy CVIP INFINITY	
+	pcs constraint order CVIP then HAproxy
+}	
+
+
+function haproxy_setup ()
+{
+	echo "listen admin" >> /etc/haproxy/haproxy.cfg
+	echo "    bind *:8443" >> /etc/haproxy/haproxy.cfg
+	echo "    stats enable" >> /etc/haproxy/haproxy.cfg
+	echo "" >> /etc/haproxy/haproxy.cfg
+	echo "listen db-vms-galera" >> /etc/haproxy/haproxy.cfg
+	echo "   bind 0.0.0.0:3306" >> /etc/haproxy/haproxy.cfg
+	echo "   balance source" >> /etc/haproxy/haproxy.cfg
+	echo "   mode tcp" >> /etc/haproxy/haproxy.cfg
+	echo "   option tcpka" >> /etc/haproxy/haproxy.cfg
+	echo "   stick-table type ip size 2 " >> /etc/haproxy/haproxy.cfg
+	echo "   stick on dst " >> /etc/haproxy/haproxy.cfg
+	echo "   timeout server 90s" >> /etc/haproxy/haproxy.cfg
+	echo "   timeout client 90s" >> /etc/haproxy/haproxy.cfg
+	Service_server_count=1
+	for i in $(echo HAproxyServerList | sed -e 's/,/ /g')
+	do
+		echo "   server proxy$Service_server_count $i:13306 check inter 1s" >> /etc/haproxy/haproxy.cfg
+		let Service_server_count=$Service_server_count+1
+	done
+}
+
+function galera_setup ()
+{
+	mysql -u root -ppassword -e "GRANT PROCESS ON *.* TO 'clustercheck'@'localhost' IDENTIFIED BY 'password';"
+}
+
+
+
+pre_setup
+haproxy_setup
+pcs_setup
